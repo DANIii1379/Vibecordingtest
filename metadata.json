@@ -1,0 +1,6 @@
+{
+  "name": "EntangLO: Quantum Logic Puzzle",
+  "description": "An unprecedented full-stack puzzle game combining quantum entanglement logic with interactive light waveguides, accompanied by an AI Holographic Advisor (Erwin the cat) and infinite levels generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
