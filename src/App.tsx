@@ -55,6 +55,11 @@ export default function App() {
   const [generationDifficulty, setGenerationDifficulty] = useState<"Easy" | "Medium" | "Hard">("Medium");
   const [isSynthesizingLevel, setIsSynthesizingLevel] = useState<boolean>(false);
 
+  // Custom user linking states
+  const [linkModeActive, setLinkModeActive] = useState<boolean>(false);
+  const [linkModeType, setLinkModeType] = useState<"direct" | "inverse">("direct");
+  const [selectedTileId, setSelectedTileId] = useState<string | null>(null);
+
   const activeLevel = levels[currentLevelIdx] || levels[0];
 
   /**
@@ -96,6 +101,9 @@ export default function App() {
     setCompleted(false);
     setCoherenceStability(100);
     setCollapsed(false);
+    setLinkModeActive(false);
+    setLinkModeType("direct");
+    setSelectedTileId(null);
 
     // Initial greeting from Erwin explaining the level
     setAiChat([
@@ -133,19 +141,149 @@ export default function App() {
   };
 
   /**
-   * Standard rotation action of a single tile.
-   * If tile has a non-null entanglementId, all other tiles sharing it rotate!
+   * Action when a tile is clicked. Represents rotation in Rotate mode,
+   * or entanglement connection/disconnection in Link mode.
    */
   const handleRotate = (tx: number, ty: number) => {
     if (completed || collapsed) return;
     const clickedTile = board[ty][tx];
-    if (clickedTile.locked || clickedTile.type === "empty" || clickedTile.type === "obstacle") return;
+    if (clickedTile.type === "empty" || clickedTile.type === "obstacle") return;
+
+    // --- CASE A: Linker Mode is ACTIVE ---
+    if (linkModeActive) {
+      if (clickedTile.locked) {
+        // Can't link locked tiles (e.g. source/core)
+        audio.playClick();
+        return;
+      }
+
+      // If clicked tile already has a user-defined link, click it to SEVER/CLEAR it!
+      if (clickedTile.entanglementId && clickedTile.entanglementId.startsWith("user-")) {
+        const severId = clickedTile.entanglementId;
+        const nextBoard = board.map((row) =>
+          row.map((t) => {
+            if (t.entanglementId === severId) {
+              return { ...t, entanglementId: null, entanglementType: undefined };
+            }
+            return t;
+          })
+        );
+        const { energizedIds: nextEnergized } = propagateCoherence(nextBoard);
+        setBoard(nextBoard);
+        setEnergizedIds(nextEnergized);
+        audio.playClick();
+        setSelectedTileId(null);
+        setAiChat((prev) => [
+          ...prev,
+          {
+            id: `sever-${Date.now()}`,
+            sender: "erwin",
+            text: "✂️【量子もつれ：デカップリング完了】\nノード [Y:" + clickedTile.y + ", X:" + clickedTile.x + "] 配下のもつれリンク（" + (severId.includes("inverse") ? "逆相 Φ⁻" : "同相 Φ⁺") + "）を切断したニャ。確率波は再び独立し、単独での回転操作が可能ニャ。",
+            timestamp: new Date().toLocaleTimeString(),
+          },
+        ]);
+        return;
+      }
+
+      // If no tile is currently selected for linking:
+      if (!selectedTileId) {
+        setSelectedTileId(clickedTile.id);
+        audio.playClick();
+        return;
+      }
+
+      // If clicked the same selected tile: deselect it
+      if (selectedTileId === clickedTile.id) {
+        setSelectedTileId(null);
+        audio.playClick();
+        return;
+      }
+
+      // We have a first tile and a second clicked tile! Connect them!
+      const parts = selectedTileId.split("-");
+      const sX = parseInt(parts[1], 10);
+      const sY = parseInt(parts[2], 10);
+      const tile1 = board[sY][sX];
+
+      // Limit check: maximum 4 custom user links are allowed
+      const uniqueUserLinks = new Set<string>();
+      board.forEach((r) => r.forEach((t) => {
+        if (t.entanglementId && t.entanglementId.startsWith("user-")) {
+          uniqueUserLinks.add(t.entanglementId);
+        }
+      }));
+
+      if (uniqueUserLinks.size >= 4) {
+        setAiChat((prev) => [
+          ...prev,
+          {
+            id: `err-link-${Date.now()}`,
+            sender: "erwin",
+            text: `⚠️【量子もつれ上限】吾輩のスタビライザーは一度に最大4ペア（最大8つのノード）しかもつれ制御を維持できないニャ！不要な結合があれば先にタップして切断（デカップリング）してほしいニャ。`,
+            timestamp: new Date().toLocaleTimeString(),
+          },
+        ]);
+        setSelectedTileId(null);
+        audio.playClick();
+        return;
+      }
+
+      // Build unique link ID
+      const userLinkId = `user-${linkModeType}-${Date.now()}`;
+
+      const nextBoard = board.map((row) =>
+        row.map((t) => {
+          if (t.id === tile1.id || t.id === clickedTile.id) {
+            return {
+              ...t,
+              entanglementId: userLinkId,
+              entanglementType: linkModeType,
+            };
+          }
+          return t;
+        })
+      );
+
+      const { energizedIds: nextEnergized } = propagateCoherence(nextBoard);
+      setBoard(nextBoard);
+      setEnergizedIds(nextEnergized);
+      setSelectedTileId(null);
+      audio.playQuantumEntangled();
+
+      // Report link establishment
+      setAiChat((prev) => [
+        ...prev,
+        {
+          id: `link-create-${Date.now()}`,
+          sender: "erwin",
+          text: "🔗【量子同期もつれ 結合成功！】\nノード [Y:" + tile1.y + ", X:" + tile1.x + "] と [Y:" + clickedTile.y + ", X:" + clickedTile.x + "] を「" + (linkModeType === "direct" ? "同相同期 (Φ⁺)" : "逆相同期 (Φ⁻") + "」で接続したニャ！\nこれでお互いのスピン（回転）が結合され、一対となって動作する。自作のアライメント光路を上手く編み出して、コアへエネルギーを導くのだ！",
+          timestamp: new Date().toLocaleTimeString(),
+        },
+      ]);
+      return;
+    }
+
+    // --- CASE B: Linker Mode is INACTIVE (Rotate Mode) ---
+    if (clickedTile.locked) return;
 
     // Save action context to Undo Stack
     setUndoStack((prev) => [...prev, board.map((row) => row.map((t) => t.rotation))]);
 
-    // Compute stability cost: 1.8x goal moves allowed before collapse
-    const stabilityCost = Math.ceil(100 / (activeLevel.parMoves * 1.8));
+    // Compute active links count on field
+    const activeLinksCount = (() => {
+      const uniqueUserLinks = new Set<string>();
+      board.forEach((r) => r.forEach((t) => {
+        if (t.entanglementId && t.entanglementId.startsWith("user-")) {
+          uniqueUserLinks.add(t.entanglementId);
+        }
+      }));
+      return uniqueUserLinks.size;
+    })();
+
+    // Compute stability cost: more links carry more quantum decoherence maintenance tax!
+    const linkPenaltyFactor = 1 + (activeLinksCount * 0.45);
+    const baseStabilityCost = Math.ceil(100 / (activeLevel.parMoves * 1.8));
+    const stabilityCost = Math.ceil(baseStabilityCost * linkPenaltyFactor);
     const nextStability = Math.max(0, coherenceStability - stabilityCost);
     setCoherenceStability(nextStability);
 
@@ -193,22 +331,18 @@ export default function App() {
       setCompleted(true);
       audio.playWin();
 
-      // Congratulations from Erwin
       const levelPar = activeLevel?.parMoves || 10;
       const moves = moveCount + 1;
-      let starResult = "★★★ 完璧ニャ！完美なるコヒーレンスだ！";
-      if (moves > levelPar + 2) starResult = "★ コヒーレンスは保たれたが不純物が多いニャ。さらなる高み（目標手数）を目指すのだ！";
-      else if (moves > levelPar) starResult = "★★ 概ね良好。もつれの挙動を完全に制御しきればパー手数を切れるはずニャ。";
+      let starResult = "★★★ 完璧ニャ！自作の量子リンクアライメント、恐るべき閃きニャ！";
+      if (moves > levelPar + 2) starResult = "★ コヒーレンスは保たれたが不純物が多いニャ。不要な同期リンクを間引いて最適化をねらうニャ！";
+      else if (moves > levelPar) starResult = "★★ 概ね良好。もつれの切断・接続タイミングを完全に制御しきればパー達成ニャ！";
 
       setAiChat((prev) => [
         ...prev,
         {
           id: `victory-${Date.now()}`,
           sender: "erwin",
-          text: `🎉【量子共鳴の調和 完了！】
-手数：${moves}手 (目標：${levelPar}手)
-量子評価：${starResult}
-次のレベルの周波数にノードを合わせるニャ！`,
+          text: "🎉【量子共鳴の調和 完了！】\n手動結合を含む手数：" + moves + "手 (目標：" + levelPar + "手)\n量子評価：" + starResult + "\nノードから極上の波動が出ているニャ！",
           timestamp: new Date().toLocaleTimeString(),
         },
       ]);
@@ -220,9 +354,7 @@ export default function App() {
         {
           id: `collapse-${Date.now()}`,
           sender: "erwin",
-          text: `⚠️【量子デコヒーレンス崩壊が発生したニャ！】
-無秩序に回しすぎだニャ！デコヒーレンス・ノイズが累積したため確率の重ね合わせ波が消失し、回路が完全にロック（崩壊）してしまったニャ。
-これ以上の観測は不可能。［リセット］するか、［戻す］ボタンで1つ前の時間線（状態）に戻って、無秩序に回さずに慎重に最短アライメントを編み出すニャ！`,
+          text: "⚠️【量子デコヒーレンス崩壊が発生したニャ！】\n無秩序に回転させすぎたか、もしくは繋ぎすぎた量子リンク（リンク数×1.45倍負荷ペナルティ）によるコヒーレンスペースの圧迫が原因ニャ。\n1つ戻すか、一度リセットして、もつれ回路をスマートに最適化するのだ！",
           timestamp: new Date().toLocaleTimeString(),
         },
       ]);
@@ -267,12 +399,11 @@ export default function App() {
    * Serialize current grid details dynamically for Gemini prompt
    */
   const serializeBoardState = () => {
-    let summary = `現在プレイ中のレベル名: "${activeLevel.name}"
-テーマの量子概念: "${activeLevel.quantumConcept}"
-現在の移動手数: ${moveCount}手 / 目標手数 (Par): ${activeLevel.parMoves}手
-グリッド次元: ${activeLevel.width}x${activeLevel.height}マス
-
-盤面の粒子情報 ( energized: true/false はエネルギー電流量を表す ):\n`;
+    let summary = "現在プレイ中のレベル名: \"" + activeLevel.name + "\"\n" +
+      "テーマの量子概念: \"" + activeLevel.quantumConcept + "\"\n" +
+      "現在の移動手数: " + moveCount + "手 / 目標手数 (Par): " + activeLevel.parMoves + "手\n" +
+      "グリッド次元: " + activeLevel.width + "x" + activeLevel.height + "マス\n\n" +
+      "盤面の粒子情報 ( energized: true/false はエネルギー電流量を表す ):\n";
 
     board.forEach((row, y) => {
       row.forEach((t) => {
@@ -288,8 +419,8 @@ export default function App() {
       });
     });
 
-    summary += `\n【攻略目標】: "source"ノードから発せられる青い光（通電状態）が、"core"ノード（コア）に繋がればパズルクリア。
-現在、コアは ${checkCompletion(energizedIds, board) ? "稼働(energized: TRUE)" : "休止中(energized: FALSE)"} です。`;
+    summary += "\n【攻略目標】: \"source\"ノードから発せられる青い光（通電状態）が、\"core\"ノード（コア）に繋がればパズルクリア。\n" +
+      "現在、コアは " + (checkCompletion(energizedIds, board) ? "稼働(energized: TRUE)" : "休止中(energized: FALSE)") + " です。";
 
     return summary;
   };
@@ -382,7 +513,7 @@ export default function App() {
           quantumConcept: activeLevel.quantumConcept,
           moveCount,
           parMoves: activeLevel.parMoves,
-          boardStateSummary: `【質問】: "${text}"\n\n【最新盤面状態】:\n${boardSummary}`,
+          boardStateSummary: "【質問】: \"" + text + "\"\n\n【最新盤面状態】:\n" + boardSummary,
           chatHistory: aiChat.slice(-5),
         }),
       });
@@ -428,8 +559,7 @@ export default function App() {
       {
         id: `synth-start-${Date.now()}`,
         sender: "erwin",
-        text: `【超空間コヒーレンス光の合成中】
-現在、Gemini-3.5-Flashを媒介として 難易度:${generationDifficulty} の全新量子パズルレベルを合成しているニャ！ 確率波が励起するのを心待ちにするのだ。`,
+        text: "【超空間コヒーレンス光の合成中】\n現在、Gemini-3.5-Flashを媒介として 難易度:" + generationDifficulty + " の全新量子パズルレベルを合成しているニャ！ 確率波が励起するのを心待ちにするのだ。",
         timestamp: new Date().toLocaleTimeString(),
       },
     ]);
@@ -644,6 +774,7 @@ export default function App() {
               onRotate={handleRotate}
               hoveredEntanglement={hoveredEntanglement}
               setHoveredEntanglement={setHoveredEntanglement}
+              selectedTileId={selectedTileId}
             />
 
             {/* Victory overlay banner inside stages */}
@@ -749,6 +880,161 @@ export default function App() {
                 </motion.div>
               )}
             </AnimatePresence>
+          </div>
+
+          {/* Quantum Link Composer UI card */}
+          <div className="bg-slate-900/40 p-5 rounded-3xl border border-slate-800/80 backdrop-blur-xl flex flex-col gap-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-start gap-2 text-left">
+                <div className={`p-1.5 rounded-lg border transition-all pointer-events-none mt-0.5 ${
+                  linkModeActive 
+                    ? "bg-cyan-950/50 border-cyan-500/50 text-cyan-400 shadow-[0_0_10px_rgba(34,211,238,0.2)]" 
+                    : "bg-slate-950 border-slate-850 text-slate-500"
+                }`}>
+                  <Zap className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-slate-200">
+                    量子リンク・コンポーザー (自己もつれ結合)
+                  </h4>
+                  <p className="text-[10px] text-slate-400 leading-normal mt-0.5">
+                    お互いに同期・もつれさせたい２つのノードを自分自身で自由に選択・指定できるニャ！
+                  </p>
+                </div>
+              </div>
+
+              {/* Status Indicator Badge */}
+              <div className={`text-[9px] font-mono font-bold tracking-widest px-2.5 py-1 rounded-md border shrink-0 text-center ${
+                linkModeActive
+                  ? "bg-cyan-950/60 border-cyan-500/50 text-cyan-400 animate-pulse"
+                  : "bg-slate-950 border-slate-850 text-slate-500"
+              }`}>
+                {linkModeActive ? "LINK INJECTION ACTIVE" : "STANDBY"}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+              {/* Toggle switch for linking tool */}
+              <div className="md:col-span-5 flex gap-2 w-full">
+                <button
+                  onClick={() => {
+                    const nextActive = !linkModeActive;
+                    setLinkModeActive(nextActive);
+                    setSelectedTileId(null);
+                    audio.playClick();
+                    if (nextActive) {
+                      setAiChat((prev) => [
+                        ...prev,
+                        {
+                          id: `link-mode-on-${Date.now()}`,
+                          sender: "erwin",
+                          text: `🛠️【リンク構築モード：起動】
+もつれさせたい2つのノードを順に選んで、人工的なもつれ結合（同期）を形成するニャ！
+結合の種類も「同相 (Φ⁺)」か「逆相 (Φ⁻)」から選べるニャ。ただし、リンク中は1回転ごとにデコヒーレンス維持経費ペナルティ（1リンクあたり熱雑音+45％加算）がかかるハイリスク＆ハイリターン仕様だニャ！`,
+                          timestamp: new Date().toLocaleTimeString(),
+                        },
+                      ]);
+                    }
+                  }}
+                  className={`w-full py-2.5 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-95 border ${
+                    linkModeActive
+                      ? "bg-gradient-to-r from-cyan-600 to-sky-600 hover:from-cyan-500 hover:to-sky-500 border-cyan-400 text-white shadow-[0_0_15px_rgba(6,182,212,0.4)] font-extrabold"
+                      : "bg-slate-950 hover:bg-slate-900 border-slate-800 text-slate-350"
+                  }`}
+                >
+                  <Zap className={`w-3.5 h-3.5 ${linkModeActive ? "animate-bounce" : ""}`} />
+                  {linkModeActive ? "リンク構築モード終了" : "リンク構築モードを起動"}
+                </button>
+              </div>
+
+              {/* Coupling Selector (Direct/Inverse sync) */}
+              <div className="md:col-span-4 flex bg-slate-950 p-1 rounded-xl border border-slate-850 gap-1 w-full">
+                <button
+                  onClick={() => {
+                    setLinkModeType("direct");
+                    audio.playClick();
+                  }}
+                  disabled={!linkModeActive}
+                  className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-1 cursor-pointer disabled:opacity-20 disabled:pointer-events-none ${
+                    linkModeType === "direct" && linkModeActive
+                      ? "bg-sky-500/20 border border-sky-550/30 text-sky-400"
+                      : "text-slate-400 hover:text-slate-350"
+                  }`}
+                >
+                  <span className="font-bold font-mono">Φ⁺ 同相</span>
+                  <span className="text-[8px] px-1 rounded bg-slate-900 border border-slate-800 text-sky-400 shrink-0">同調</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setLinkModeType("inverse");
+                    audio.playClick();
+                  }}
+                  disabled={!linkModeActive}
+                  className={`flex-1 py-1.5 rounded-lg text-[10px] font-bold transition-all flex items-center justify-center gap-1 cursor-pointer disabled:opacity-20 disabled:pointer-events-none ${
+                    linkModeType === "inverse" && linkModeActive
+                      ? "bg-rose-500/20 border border-rose-550/30 text-rose-400"
+                      : "text-slate-400 hover:text-slate-350"
+                  }`}
+                >
+                  <span className="font-bold font-mono">Φ⁻ 逆相</span>
+                  <span className="text-[8px] px-1 rounded bg-slate-900 border border-slate-800 text-rose-400 shrink-0">逆調</span>
+                </button>
+              </div>
+
+              {/* Reset/Sever link buttons */}
+              <div className="md:col-span-3 flex gap-2 w-full">
+                <button
+                  onClick={() => {
+                    // Sever all user connections
+                    const nextBoard = board.map((row) =>
+                      row.map((tile) => {
+                        if (tile.entanglementId && tile.entanglementId.startsWith("user-")) {
+                          return { ...tile, entanglementId: null, entanglementType: undefined };
+                        }
+                        return tile;
+                      })
+                    );
+                    const { energizedIds: nextEnergized } = propagateCoherence(nextBoard);
+                    setBoard(nextBoard);
+                    setEnergizedIds(nextEnergized);
+                    setSelectedTileId(null);
+                    audio.playClick();
+                    setAiChat((prev) => [
+                      ...prev,
+                      {
+                        id: `clear-links-${Date.now()}`,
+                        sender: "erwin",
+                        text: `🧹【量子全結合を初期化】
+構築していたすべての人工もつれリンクを解除（デカップリング）したニャ。熱ペナルティが解除され、本来の静寂が回復したニャ！`,
+                        timestamp: new Date().toLocaleTimeString(),
+                      },
+                    ]);
+                  }}
+                  className="w-full py-2.5 px-3 rounded-xl bg-slate-950 hover:bg-slate-900 border border-slate-850 hover:border-slate-700 text-slate-350 hover:text-slate-100 text-[11px] font-bold cursor-pointer transition-all flex items-center justify-center gap-1"
+                >
+                  全リンク解除
+                </button>
+              </div>
+            </div>
+
+            {/* Hint alert showing complexity mechanics under state */}
+            <div className="p-3 bg-slate-950/60 rounded-2xl border border-slate-850/60 text-[10px] text-slate-400 leading-normal text-left">
+              {linkModeActive ? (
+                <p className="flex items-start gap-1 text-cyan-300 font-mono">
+                  <span className="text-cyan-400 animate-pulse">💡</span>
+                  <span>
+                    【リンク接続手順】: 1つ目のノードを選択し（青い点滅状態）、次にもう1つのノードを選択すると同期もつれが形成されます。すでに青い鎖で繋がっているノード自体をタップすると、その接続のみを切断できます。
+                  </span>
+                </p>
+              ) : (
+                <p className="flex items-start gap-1">
+                  <span>💡</span>
+                  <span>
+                    【コヒーレンス税（高難易度ペナルティ）】: 自由なもつれリンクは強力ですが、1リンク（1カップル）維持するごとに回転消費時のCoherence Stability消耗が <strong className="text-rose-400 font-bold">+45%激増</strong> します！不要になったら「全リンク解除」や個別タップで積極的に切って、無駄のないアライメントで極限解決を目指すニャ。
+                  </span>
+                </p>
+              )}
+            </div>
           </div>
 
           {/* AI Custom Level Synthesizer control card */}

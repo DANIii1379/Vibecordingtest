@@ -15,6 +15,7 @@ interface WaveguideGridProps {
   onRotate: (x: number, y: number) => void;
   hoveredEntanglement: string | null;
   setHoveredEntanglement: (id: string | null) => void;
+  selectedTileId?: string | null; // Selected tile for customized linking
 }
 
 export const WaveguideGrid: React.FC<WaveguideGridProps> = ({
@@ -23,6 +24,7 @@ export const WaveguideGrid: React.FC<WaveguideGridProps> = ({
   onRotate,
   hoveredEntanglement,
   setHoveredEntanglement,
+  selectedTileId,
 }) => {
   const height = board.length;
   const width = board[0]?.length || 0;
@@ -31,6 +33,29 @@ export const WaveguideGrid: React.FC<WaveguideGridProps> = ({
   const getEntanglementTheme = (id: string | null) => {
     if (!id) return null;
     const key = id.toLowerCase();
+
+    // User customized links
+    if (key.startsWith("user-direct-")) {
+      return {
+        bg: "bg-sky-950/45",
+        border: "border-sky-400 border-dashed border-2",
+        glow: "shadow-[0_0_20px_rgba(56,189,248,0.7)]",
+        line: "stroke-sky-400",
+        text: "text-sky-300",
+        symbol: "Φ⁺",
+      };
+    }
+    if (key.startsWith("user-inverse-")) {
+      return {
+        bg: "bg-rose-950/45",
+        border: "border-rose-400 border-dashed border-2",
+        glow: "shadow-[0_0_20px_rgba(251,113,133,0.7)]",
+        line: "stroke-rose-400",
+        text: "text-rose-300",
+        symbol: "Φ⁻",
+      };
+    }
+
     if (key.includes("alpha") || key.includes("1")) {
       return {
         bg: "bg-purple-950/40",
@@ -109,6 +134,7 @@ export const WaveguideGrid: React.FC<WaveguideGridProps> = ({
           const absolutePorts = getAbsolutePorts(tile.initialPorts, tile.rotation);
           const theme = getEntanglementTheme(tile.entanglementId);
           const isFocussedLink = hoveredEntanglement && tile.entanglementId === hoveredEntanglement;
+          const isCurrentlyLinking = selectedTileId && tile.id === selectedTileId;
 
           return (
             <motion.div
@@ -127,6 +153,7 @@ export const WaveguideGrid: React.FC<WaveguideGridProps> = ({
                 ${theme ? `${theme.bg} ${theme.border} border-2` : "border"}
                 ${isEnergized ? "border-cyan-400Shadow" : ""}
                 ${isFocussedLink ? `${theme?.glow} scale-[1.02] border-opacity-100 z-10` : ""}
+                ${isCurrentlyLinking ? "border-cyan-400 border-2 bg-cyan-950/20 shadow-[0_0_20px_rgba(34,211,238,0.8)] scale-[1.04] z-10 animate-pulse" : ""}
               `}
               id={tile.id}
             >
@@ -230,6 +257,82 @@ export const WaveguideGrid: React.FC<WaveguideGridProps> = ({
           );
         })
       )}
+
+      {/* SVG overlay to draw connections between custom-entangled pairs */}
+      <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
+        {(() => {
+          const links: { [key: string]: { x: number; y: number }[] } = {};
+          board.forEach((row, y) => {
+            row.forEach((tile, x) => {
+              if (tile.entanglementId && tile.entanglementId.startsWith("user-")) {
+                if (!links[tile.entanglementId]) links[tile.entanglementId] = [];
+                links[tile.entanglementId].push({ x, y });
+              }
+            });
+          });
+
+          return Object.entries(links).map(([id, pts]) => {
+            if (pts.length < 2) return null;
+            const t1 = pts[0];
+            const t2 = pts[1];
+            const x1_p = `${((t1.x + 0.5) / width) * 100}%`;
+            const y1_p = `${((t1.y + 0.5) / height) * 100}%`;
+            const x2_p = `${((t2.x + 0.5) / width) * 100}%`;
+            const y2_p = `${((t2.y + 0.5) / height) * 100}%`;
+
+            const isInverse = id.includes("inverse");
+            const strokeColor = isInverse ? "rgba(244,63,94,0.85)" : "rgba(14,165,233,0.85)";
+            const glowColor = isInverse ? "rgba(244,63,94,0.3)" : "rgba(14,165,233,0.3)";
+
+            return (
+              <g key={id}>
+                {/* Thick glow backline */}
+                <line
+                  x1={x1_p}
+                  y1={y1_p}
+                  x2={x2_p}
+                  y2={y2_p}
+                  stroke={glowColor}
+                  strokeWidth="8"
+                  className="animate-pulse"
+                />
+                {/* Dashed connector line */}
+                <line
+                  x1={x1_p}
+                  y1={y1_p}
+                  x2={x2_p}
+                  y2={y2_p}
+                  stroke={strokeColor}
+                  strokeWidth="2"
+                  strokeDasharray="6, 4"
+                  className="animate-pulse"
+                  style={{ animationDuration: "3s" }}
+                />
+                {/* Midpoint badge displaying symbol */}
+                <circle
+                  cx={`${((t1.x + t2.x + 1) / (2 * width)) * 100}%`}
+                  cy={`${((t1.y + t2.y + 1) / (2 * height)) * 100}%`}
+                  r="11"
+                  className="fill-slate-950 stroke-2"
+                  stroke={strokeColor}
+                />
+                <text
+                  x={`${((t1.x + t2.x + 1) / (2 * width)) * 100}%`}
+                  y={`${((t1.y + t2.y + 1) / (2 * height)) * 100}%`}
+                  fill={isInverse ? "#fda4af" : "#38bdf8"}
+                  fontSize="11"
+                  fontWeight="bold"
+                  fontFamily="sans-serif"
+                  textAnchor="middle"
+                  dy="3.5"
+                >
+                  {isInverse ? "Φ⁻" : "Φ⁺"}
+                </text>
+              </g>
+            );
+          });
+        })()}
+      </svg>
     </div>
   );
 };
